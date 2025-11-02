@@ -1,0 +1,67 @@
+# Node / build
+node_modules/
+npm-debug.log*
+yarn-error.log
+dist/
+build/
+coverage/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+*.swp
+*.swo
+
+# Environment / secrets
+.env
+.env.*
+*.env
+.secrets
+secrets.yml
+secret-*.yml
+*.secret
+
+# Keys / certs / private credentials
+*.key
+*.pem
+*.p12
+*.crt
+*.der
+*.jks
+
+# GCP / Google service account & credentials
+credentials.json
+credentials-*.json
+*-credentials.json
+*service-account*.json
+*.gserviceaccount.json
+*.key.json
+client_secret*.json
+oauth2-client.json
+oauth-credentials.json
+.clasp.json
+
+# CLASP / GAS related local state (may contain scriptId / tokens)
+.clasp/
+.clasp.*.json
+.classpath
+
+# Deployment scripts that may include secrets (ignore runtime deploy scripts which may contain creds)
+discord-bot/deploy_cloud_run.ps1
+# Keep template files (commit these) so repo contains a safe example deploy script
+!discord-bot/*.template.ps1
+
+# Logs & temporary
+logs/
+*.log
+tmp/
+temp/
+*.tmp
+
+# IDE / misc
+.idea/
+*.iml
+
+# If you intentionally want to keep certain JSON files (package.json, package-lock.json, etc.)
+# do NOT add generic *.json ignores above. Specific credential names are ignored instead.

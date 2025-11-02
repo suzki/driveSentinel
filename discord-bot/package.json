@@ -1,0 +1,16 @@
+{
+  "name": "drive-sentinel-discord-bot",
+  "version": "1.0.0",
+  "description": "Discord Bot to handle approval interactions for Drive Sentinel.",
+  "main": "app.js",
+  "scripts": {
+    "start": "node app.js"
+  },
+  "dependencies": {
+    "@discordjs/rest": "^2.2.0",
+    "axios": "^1.6.8",
+    "discord-interactions": "^3.4.0",
+    "discord.js": "^14.15.2",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2" }
+}
