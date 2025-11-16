@@ -63,30 +63,21 @@ function checkNewFilesAndNotify() {
  */
 function processFile(file) {
   Logger.log(`Processing file: ${file.getName()} (${file.getId()})`);
-  
-  // 1. Extract Text Content (OCR for images/PDFs)
-  const textContent = extractTextFromFile(file);
 
-  // === ERROR CHECK (1): Text Content Missing ===
-  if (!textContent || textContent.trim().length === 0) {
-    const message = `Warning: Could not extract meaningful text from document: ${file.getName()}. Manual review needed.`;
-    Logger.log(`[ERROR] Text extraction failed or resulted in empty string for file: ${file.getName()}`);
-    sendDiscordNotification("AI Classification Failed", message, file.getName(), file.getId(), "Manual Review");
-    
-    // Mark file as processed (Manual Review)
-    try { file.setDescription("DS_PROCESSED_MANUAL_REVIEW"); } catch (e) { Logger.log("Warning: Could not set file description (permission issue)."); }
-    return; // Stop processing this file
+  // 1. Gemini Visionを使用してファイルを直接分類
+  // この方法はOCRとキーワード分類を置き換えます。
+  const GCP_PROJECT_ID = getScriptProperty('GCP_PROJECT_ID');
+  const GCP_LOCATION = getScriptProperty('GCP_LOCATION'); // 例: 'us-central1'
+
+  if (!GCP_PROJECT_ID || !GCP_LOCATION) {
+      Logger.log("ERROR: GCP_PROJECT_ID or GCP_LOCATION is not set in Script Properties.");
+      // エラー時の処理をここに記述
+      return;
   }
 
-  // 2. キーワードに基づいてドキュメントの種類を分類
-  let categoryName = classifyByKeywords(textContent);
+  Logger.log("Starting AI classification with Gemini Vision...");
+  const categoryName = classifyFileWithGemini_GAS(file, { projectId: GCP_PROJECT_ID, location: GCP_LOCATION });
 
-  // 3. キーワードで分類できなかった場合、AIによる分類を試みる
-  if (categoryName === "不明") {
-    Logger.log("Keyword classification failed. Falling back to AI classification.");
-    const englishCategory = classifyDocument(textContent);
-    categoryName = convertCategoryToJapanese(englishCategory);
-  }
 
   // ★★★★★ ここから追加 ★★★★★
   // 5. 新しいファイル名を生成 (日付 + カテゴリ)
@@ -99,7 +90,7 @@ function processFile(file) {
   }
   // ★★★★★ ここまで追加 ★★★★★
 
-  // 4. Send Notification based on result
+  // 2. Send Notification based on result
   if (categoryName && categoryName !== "手動レビュー") {
     Logger.log(`[SUCCESS] Classified as: ${categoryName}`);
     sendDiscordNotification("New File Ready for Approval", `File classified as **${categoryName}**. Please click the button to approve.`, file.getName(), file.getId(), categoryName, newFileName);
@@ -110,7 +101,7 @@ function processFile(file) {
   } else {
     Logger.log(`[ERROR] Classification failed or category not mapped for file: ${file.getName()}`);
     // "Manual Review" から "手動レビュー" に変更
-    sendDiscordNotification("AI Classification Failed", `Warning: Could not classify document: ${file.getName()}. Manual review needed.`, file.getName(), file.getId(), "手動レビュー", file.getName());
+    sendDiscordNotification("AI Classification Failed", `Warning: Could not classify document: ${file.getName()}. Reason: ${categoryName}. Manual review needed.`, file.getName(), file.getId(), "手動レビュー", file.getName());
     
     // Mark file as processed (Manual Review)
     try { file.setDescription("DS_PROCESSED_MANUAL_REVIEW"); } catch (e) { Logger.log("Warning: Could not set file description (permission issue)."); }
@@ -121,6 +112,7 @@ function processFile(file) {
  * Converts file (PDF/Image/Document) to text content.
  * @param {GoogleAppsScript.Drive.File} file The file object.
  * @returns {string | null} The extracted text content or null on error/failure.
+ * @deprecated This function is no longer needed when using direct classification with Gemini Vision.
  */
 function extractTextFromFile(file) {
   const mimeType = file.getMimeType();
@@ -165,74 +157,72 @@ function extractTextFromFile(file) {
 }
 
 /**
- * Calls the GCP Natural Language API for classification.
+ * Calls the Gemini API for classification.
+ * ★★★ 改善点: この関数をGemini APIを利用するように全面的に書き換え ★★★
  * @param {string} content The text content of the file.
- * @returns {string | null} The primary category name or null if classification fails.
+ * @returns {string} The primary category name in Japanese, or "手動レビュー" if classification fails.
+ * @deprecated This function is replaced by classifyFileWithGemini_GAS which handles files directly.
  */
-function classifyDocument(content) {
-  const GCP_PROJECT_ID = getScriptProperty('GCP_PROJECT_ID');
-  if (!GCP_PROJECT_ID) {
-    Logger.log("ERROR: GCP_PROJECT_ID is not set in Script Properties.");
-    return "Manual Review"; // この関数内では英語のまま返す
+function classifyDocumentWithGemini(content) {
+  const GEMINI_API_KEY = getScriptProperty('GEMINI_API_KEY');
+  if (!GEMINI_API_KEY) {
+    Logger.log("ERROR: GEMINI_API_KEY is not set in Script Properties.");
+    return "手動レビュー";
   }
 
-  const apiUrl = `https://language.googleapis.com/v1/documents:classifyText`;
-  
-  let contentToSend = content;
-  
-  // 1. 日本語対応のため、テキストを英語に翻訳
-  try {
-    contentToSend = LanguageApp.translate(content, 'ja', 'en');
-    Logger.log(`[TRANSLATION] Japanese detected. Translated to English for GCP classification.`);
-  } catch (e) {
-      Logger.log(`[TRANSLATION ERROR] Failed to translate: ${e.message}`);
-      // 翻訳失敗時は元のコンテンツで続行し、API側でエラーが出る可能性を許容
-      // またはここで処理を中断する（今回は続行）
-  }
-  
-  // APIへのリクエストペイロード
+  const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=${GEMINI_API_KEY}`;
+
+  // Geminiに分類してほしいカテゴリのリスト。キーワード分類のものを再利用します。
+  const categories = [
+    "学校・教育", "請求書・領収書", "マニュアル・保証書", "公共料金", 
+    "税金・公的書類", "金融・保険", "医療・健康", "仕事関連", "チラシ・広告", "その他"
+  ];
+
+  // Geminiへの指示（プロンプト）
+  const prompt = `
+以下のテキストを読んで、最も適切だと思われるカテゴリを下記のリストから1つだけ選んでください。
+リストにないカテゴリは使用しないでください。判断が難しい場合は「その他」と回答してください。
+回答はカテゴリ名のみで、他の言葉は含めないでください。
+
+カテゴリリスト:
+${categories.join(", ")}
+
+--- テキスト ---
+${content.substring(0, 8000)}
+--- テキスト終 ---
+
+カテゴリ:
+`;
+
   const payload = {
-    document: {
-      content: contentToSend, // 翻訳後のコンテンツを使用
-      type: 'PLAIN_TEXT'
-    }
+    "contents": [{
+      "parts": [{
+        "text": prompt
+      }]
+    }]
   };
 
   const options = {
     method: 'post',
     contentType: 'application/json',
     payload: JSON.stringify(payload),
-    muteHttpExceptions: true, 
-    
-    headers: {
-      'Authorization': 'Bearer ' + ScriptApp.getOAuthToken(),
-      'X-Goog-User-Project': GCP_PROJECT_ID 
-    }
+    muteHttpExceptions: true
   };
 
   try {
     const response = UrlFetchApp.fetch(apiUrl, options);
-    const responseCode = response.getResponseCode();
     const responseText = response.getContentText();
     const jsonResponse = JSON.parse(responseText);
-    
-    if (responseCode !== 200) {
-      Logger.log(`[NL API ERROR] HTTP Status: ${responseCode}, Response: ${responseText}`);
-      return "Manual Review"; // APIエラー時は手動レビューへ
-    }
-    
-    if (jsonResponse.categories && jsonResponse.categories.length > 0) {
-      const categoryPath = jsonResponse.categories[0].name;
-      const parts = categoryPath.split('/');
-      // パスの一番最後の要素をフォルダ名として使用
-      return parts[parts.length - 1] || "Uncategorized"; 
-    }
-    
-    return "Manual Review"; // カテゴリが見つからなかった場合 (英語)
 
+    // Geminiからの回答を抽出
+    const category = jsonResponse.candidates[0].content.parts[0].text.trim();
+    Logger.log(`[Gemini SUCCESS] Classified as: ${category}`);
+    
+    // 念のため、カテゴリリストに含まれるかチェック
+    return categories.includes(category) ? category : "手動レビュー";
   } catch (e) {
-    Logger.log("UrlFetch Error during classification: " + e.message);
-    return "Manual Review"; // ネットワーク/JSONパースエラー時も手動レビューへ (英語)
+    Logger.log(`[Gemini ERROR] Failed to classify document. Error: ${e.message}`);
+    return "手動レビュー";
   }
 }
 
@@ -240,11 +230,13 @@ function classifyDocument(content) {
  * テキスト内のキーワードに基づいてドキュメントの種類を分類します。
  * @param {string} content - 抽出されたテキストコンテンツ。
  * @returns {string} 分類されたドキュメントの種類（日本語）。一致しない場合は "不明" を返します。
+ * @deprecated This function is no longer needed when using direct classification with Gemini.
  */
 function classifyByKeywords(content) {
   // ドキュメントの種類と、それに関連するキーワードの対応表
   // このルールをカスタマイズして、分類の精度を上げることができます。
   // キーワードは正規表現も利用可能です。
+  // 生活に密着したカテゴリとキーワードのルール。上から順に評価されます。
   const keywordRules = {
     "請求書": [/請求書/, /ご請求/, /invoice/i],
     "領収書": [/領収書/, /receipt/i],
@@ -254,13 +246,25 @@ function classifyByKeywords(content) {
     "契約書": [/契約書/, /agreement/i, /業務委託/],
     "チラシ・DM": [/キャンペーン/, /限定/],
     // 必要に応じてルールを追加
+    // ★★★ 改善点: 生活に密着したカテゴリとキーワードを追加・整理 ★★★
+    "学校・教育": [/保護者様/, /PTA/, /学年だより/, /学校だより/, /進路/, /給食/, /授業参観/, /教育委員会/],
+    "請求書・領収書": [/請求書/, /ご請求/, /ご利用明細/, /領収書/, /invoice/i, /receipt/i],
+    "マニュアル・保証書": [/取扱説明書/, /保証書/, /instruction manual/i, /セットアップガイド/, /ユーザーガイド/, /warranty/i],
+    "公共料金": [/電気/, /ガス/, /水道/, /検針/, /使用量のお知らせ/],
+    "税金・公的書類": [/確定申告/, /納税/, /住民税/, /固定資産税/, /年金/, /マイナンバー/, /役所/, /市役所/, /区役所/],
+    "金融・保険": [/銀行/, /保険/, /証券/, /契約者貸付/, /生命保険/, /損害保険/],
+    "医療・健康": [/病院/, /クリニック/, /診療明細書/, /健康診断/, /検査結果/],
+    "仕事関連": [/契約書/, /agreement/i, /業務委託/, /給与明細/, /源泉徴収票/, /辞令/],
+    "チラシ・広告": [/キャンペーン/, /限定/, /セール/, /広告/],
   };
 
   // 各ルールを順番にチェック
   for (const docType in keywordRules) {
     const keywords = keywordRules[docType];
     for (const keyword of keywords) {
-      if (content.match(keyword)) {
+      // 大文字・小文字を区別せずにマッチさせる
+      const regex = new RegExp(keyword.source, 'i');
+      if (content.match(regex)) {
         Logger.log(`Keyword match found: Document type is "${docType}"`);
         return docType;
       }
@@ -277,43 +281,12 @@ function classifyByKeywords(content) {
  * @returns {string} 日本語のフォルダ名 (例: "経理", "ソフトウェア")。対応表にない場合は "手動レビュー" を返します。
  */
 function convertCategoryToJapanese(englishCategory) {
-  // 英語カテゴリと日本語フォルダ名の対応表
-  // ここの対応表を、ご自身の分類したいフォルダに合わせてカスタマイズしてください。
-  const categoryMap = {
-    // --- 一般的なカテゴリの例 ---
-    "Arts & Entertainment": "アート・エンタメ",
-    "Autos & Vehicles": "自動車",
-    "Beauty & Fitness": "美容・フィットネス",
-    "Books & Literature": "書籍・文学",
-    "Business & Industrial": "ビジネス・産業",
-    "Computers & Electronics": "コンピュータ・電子機器",
-    "Finance": "経理・財務",
-    "Food & Drink": "食品・飲料",
-    "Games": "ゲーム",
-    "Health": "健康",
-    "Hobbies & Leisure": "趣味・レジャー",
-    "Home & Garden": "ホーム・ガーデン",
-    "Internet & Telecom": "インターネット",
-    "Jobs & Education": "仕事・教育",
-    "Law & Government": "法律・行政",
-    "News": "ニュース",
-    "Online Communities": "オンラインコミュニティ",
-    "People & Society": "社会",
-    "Pets & Animals": "ペット・動物",
-    "Real Estate": "不動産",
-    "Reference": "リファレンス",
-    "Science": "科学",
-    "Shopping": "ショッピング",
-    "Sports": "スポーツ",
-    "Travel": "旅行",
-    "World Localities": "地域",
-    // --- 特殊なカテゴリ ---
-    "Uncategorized": "未分類",
-    "Manual Review": "手動レビュー" // 手動レビューも日本語に
-  };
-
-  // 対応表にカテゴリが存在すれば日本語名を、なければ "手動レビュー" を返す
-  return categoryMap[englishCategory] || "手動レビュー";
+  // ★★★ 改善点: この関数はGemini導入により不要になりますが、互換性のために残します ★★★
+  // Geminiは直接日本語カテゴリを返すため、この変換処理は実質的に使われなくなります。
+  // もし古いロジック(classifyDocument)を呼び出す箇所が残っている場合に備え、
+  // 単純にカテゴリ名をそのまま返すか、手動レビューにフォールバックさせます。
+  Logger.log(`Warning: convertCategoryToJapanese is deprecated and should not be called. Input: ${englishCategory}`);
+  return englishCategory || "手動レビュー";
 }
 
 /**

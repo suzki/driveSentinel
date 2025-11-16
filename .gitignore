@@ -63,5 +63,9 @@ temp/
 .idea/
 *.iml
 
+# Testing
+/test
+
 # If you intentionally want to keep certain JSON files (package.json, package-lock.json, etc.)
 # do NOT add generic *.json ignores above. Specific credential names are ignored instead.
+run_test.bat
