@@ -64,46 +64,47 @@ function checkNewFilesAndNotify() {
 function processFile(file) {
   Logger.log(`Processing file: ${file.getName()} (${file.getId()})`);
 
-  // 1. Gemini Visionを使用してファイルを直接分類
-  // この方法はOCRとキーワード分類を置き換えます。
   const GCP_PROJECT_ID = getScriptProperty('GCP_PROJECT_ID');
-  const GCP_LOCATION = getScriptProperty('GCP_LOCATION'); // 例: 'us-central1'
+  const GCP_LOCATION = getScriptProperty('GCP_LOCATION');
 
   if (!GCP_PROJECT_ID || !GCP_LOCATION) {
       Logger.log("ERROR: GCP_PROJECT_ID or GCP_LOCATION is not set in Script Properties.");
-      // エラー時の処理をここに記述
       return;
   }
 
   Logger.log("Starting AI classification with Gemini Vision...");
-  const categoryName = classifyFileWithGemini_GAS(file, { projectId: GCP_PROJECT_ID, location: GCP_LOCATION });
+  // 1. AI分類とファイル名提案を取得
+  const classificationResult = classifyFileWithGemini_GAS(file, { projectId: GCP_PROJECT_ID, location: GCP_LOCATION });
+  const { category, fileName: suggestedName } = classificationResult;
 
+  let finalNewFileName = file.getName(); // デフォルトは元のファイル名
+  const originalFileName = file.getName();
+  const categoryForNotification = category || "手動レビュー"; // 通知用のカテゴリ名
 
-  // ★★★★★ ここから追加 ★★★★★
-  // 5. 新しいファイル名を生成 (日付 + カテゴリ)
-  let newFileName = file.getName(); // デフォルトは元のファイル名
-  if (categoryName !== "手動レビュー") {
+  // 2. 分類結果に基づいて処理を分岐
+  if (category && !category.startsWith("手動レビュー") && suggestedName) {
+    // 成功時：AIの提案を採用
+    Logger.log(`[SUCCESS] Classified as: ${category}. Suggested name: "${suggestedName}"`);
+    
+    // 日付プレフィックスと拡張子を維持して新しいファイル名を生成
     const creationDate = file.getDateCreated();
     const formattedDate = Utilities.formatDate(creationDate, Session.getScriptTimeZone(), "yyyy-MM-dd");
-    const extension = newFileName.includes('.') ? `.${newFileName.split('.').pop()}` : '';
-    newFileName = `${formattedDate}_${categoryName}${extension}`;
-  }
-  // ★★★★★ ここまで追加 ★★★★★
+    const extension = originalFileName.includes('.') ? `.${originalFileName.split('.').pop()}` : '';
+    finalNewFileName = `${formattedDate}_${suggestedName}${extension}`;
 
-  // 2. Send Notification based on result
-  if (categoryName && categoryName !== "手動レビュー") {
-    Logger.log(`[SUCCESS] Classified as: ${categoryName}`);
-    sendDiscordNotification("New File Ready for Approval", `File classified as **${categoryName}**. Please click the button to approve.`, file.getName(), file.getId(), categoryName, newFileName);
+    const description = `File classified as **${category}**. Please click the button to approve.`;
+    sendDiscordNotification("New File Ready for Approval", description, originalFileName, file.getId(), category, finalNewFileName);
     
-    // Mark file to prevent re-processing in the next trigger run
     try { file.setDescription("DS_PROCESSED_PENDING_APPROVAL"); } catch (e) { Logger.log("Warning: Could not set file description (permission issue)."); }
 
   } else {
-    Logger.log(`[ERROR] Classification failed or category not mapped for file: ${file.getName()}`);
-    // "Manual Review" から "手動レビュー" に変更
-    sendDiscordNotification("AI Classification Failed", `Warning: Could not classify document: ${file.getName()}. Reason: ${categoryName}. Manual review needed.`, file.getName(), file.getId(), "手動レビュー", file.getName());
+    // 失敗時：手動レビュー
+    const reason = category || "Unknown error"; // categoryがnullの場合のフォールバック
+    Logger.log(`[ERROR] Classification failed or manual review needed for file: ${originalFileName}. Reason: ${reason}`);
     
-    // Mark file as processed (Manual Review)
+    const description = `Warning: Could not classify document: ${originalFileName}. Reason: ${reason}. Manual review needed.`;
+    sendDiscordNotification("AI Classification Failed", description, originalFileName, file.getId(), categoryForNotification, finalNewFileName);
+    
     try { file.setDescription("DS_PROCESSED_MANUAL_REVIEW"); } catch (e) { Logger.log("Warning: Could not set file description (permission issue)."); }
   }
 }
