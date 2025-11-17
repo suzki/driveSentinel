@@ -40,7 +40,7 @@ async function classifyFileWithGemini(filePath, options) {
 
     // Vertex AIクライアントを初期化
     const vertex_ai = new VertexAI({ project: projectId, location: location });
-    const model = 'gemini-1.0-pro-vision'; // 安定したモデルバージョンを指定
+    const model = 'gemini-2.0-pro'; // ご指定の最新モデル
 
     const generativeModel = vertex_ai.getGenerativeModel({ model });
 
@@ -51,17 +51,20 @@ async function classifyFileWithGemini(filePath, options) {
         "税金・公的書類", "金融・保険", "医療・健康", "仕事関連", "チラシ・広告", "その他"
     ];
 
-    const prompt = `
-このドキュメント（画像またはPDF）の内容を分析し、最も適切だと思われるカテゴリを下記のリストから1つだけ選んでください。
-リストにないカテゴリは使用しないでください。判断が難しい場合は「その他」と回答してください。
-回答はカテゴリ名のみで、他の言葉は含めないでください。
+    const prompt = `# 指示
+あなたはドキュメント分類アシスタントです。
+添付されたドキュメントの内容を分析し、以下の「カテゴリリスト」から最も適切なカテゴリを1つだけ選び、そのカテゴリ名を**完全に一致する形**で回答してください。
 
-カテゴリリスト:
-${categories.join(", ")}
+# カテゴリリスト
+- ${categories.join("\n- ")}
 
----
-カテゴリ:
-`;
+# 制約
+- 必ず「カテゴリリスト」の中から1つを選んでください。
+- 回答はカテゴリ名のみとし、他の説明や言葉は一切含めないでください。
+- リストにない単語や、リストの単語を省略した形（例：「税」）で回答してはいけません。
+- 判断が難しい場合は「その他」と回答してください。
+
+# 回答`;
 
     const request = {
         contents: [
