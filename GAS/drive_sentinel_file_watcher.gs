@@ -63,30 +63,21 @@ function checkNewFilesAndNotify() {
  */
 function processFile(file) {
   Logger.log(`Processing file: ${file.getName()} (${file.getId()})`);
-  
-  // 1. Extract Text Content (OCR for images/PDFs)
-  const textContent = extractTextFromFile(file);
 
-  // === ERROR CHECK (1): Text Content Missing ===
-  if (!textContent || textContent.trim().length === 0) {
-    const message = `Warning: Could not extract meaningful text from document: ${file.getName()}. Manual review needed.`;
-    Logger.log(`[ERROR] Text extraction failed or resulted in empty string for file: ${file.getName()}`);
-    sendDiscordNotification("AI Classification Failed", message, file.getName(), file.getId(), "Manual Review");
-    
-    // Mark file as processed (Manual Review)
-    try { file.setDescription("DS_PROCESSED_MANUAL_REVIEW"); } catch (e) { Logger.log("Warning: Could not set file description (permission issue)."); }
-    return; // Stop processing this file
+  // 1. Gemini Visionを使用してファイルを直接分類
+  // この方法はOCRとキーワード分類を置き換えます。
+  const GCP_PROJECT_ID = getScriptProperty('GCP_PROJECT_ID');
+  const GCP_LOCATION = getScriptProperty('GCP_LOCATION'); // 例: 'us-central1'
+
+  if (!GCP_PROJECT_ID || !GCP_LOCATION) {
+      Logger.log("ERROR: GCP_PROJECT_ID or GCP_LOCATION is not set in Script Properties.");
+      // エラー時の処理をここに記述
+      return;
   }
 
-  // 2. キーワードに基づいてドキュメントの種類を分類
-  let categoryName = classifyByKeywords(textContent);
+  Logger.log("Starting AI classification with Gemini Vision...");
+  const categoryName = classifyFileWithGemini_GAS(file, { projectId: GCP_PROJECT_ID, location: GCP_LOCATION });
 
-  // 3. キーワードで分類できなかった場合、AIによる分類を試みる
-  if (categoryName === "不明") {
-    Logger.log("Keyword classification failed. Falling back to AI classification.");
-    const englishCategory = classifyDocument(textContent);
-    categoryName = convertCategoryToJapanese(englishCategory);
-  }
 
   // ★★★★★ ここから追加 ★★★★★
   // 5. 新しいファイル名を生成 (日付 + カテゴリ)
@@ -99,7 +90,7 @@ function processFile(file) {
   }
   // ★★★★★ ここまで追加 ★★★★★
 
-  // 4. Send Notification based on result
+  // 2. Send Notification based on result
   if (categoryName && categoryName !== "手動レビュー") {
     Logger.log(`[SUCCESS] Classified as: ${categoryName}`);
     sendDiscordNotification("New File Ready for Approval", `File classified as **${categoryName}**. Please click the button to approve.`, file.getName(), file.getId(), categoryName, newFileName);
@@ -110,210 +101,11 @@ function processFile(file) {
   } else {
     Logger.log(`[ERROR] Classification failed or category not mapped for file: ${file.getName()}`);
     // "Manual Review" から "手動レビュー" に変更
-    sendDiscordNotification("AI Classification Failed", `Warning: Could not classify document: ${file.getName()}. Manual review needed.`, file.getName(), file.getId(), "手動レビュー", file.getName());
+    sendDiscordNotification("AI Classification Failed", `Warning: Could not classify document: ${file.getName()}. Reason: ${categoryName}. Manual review needed.`, file.getName(), file.getId(), "手動レビュー", file.getName());
     
     // Mark file as processed (Manual Review)
     try { file.setDescription("DS_PROCESSED_MANUAL_REVIEW"); } catch (e) { Logger.log("Warning: Could not set file description (permission issue)."); }
   }
-}
-
-/**
- * Converts file (PDF/Image/Document) to text content.
- * @param {GoogleAppsScript.Drive.File} file The file object.
- * @returns {string | null} The extracted text content or null on error/failure.
- */
-function extractTextFromFile(file) {
-  const mimeType = file.getMimeType();
-  
-  if (mimeType.indexOf('text') > -1 || mimeType.indexOf('document') > -1) {
-    // Standard text or Google Doc file
-    try {
-        return DocumentApp.openById(file.getId()).getBody().getText();
-    } catch (e) {
-        Logger.log("DocumentApp.openById Error: " + e.message);
-        return null;
-    }
-  }
-
-  // PDFや画像の場合は、一時的にGoogleドキュメントに変換してOCRを実行
-  if (mimeType === MimeType.PDF || mimeType.indexOf('image') > -1) {
-    if (typeof Drive === 'undefined') {
-        Logger.log("CRITICAL ERROR: Drive API (V2) Advanced Service is not enabled.");
-        return null; 
-    }
-
-    try {
-      const ocrFile = Drive.Files.copy(
-        { title: 'OCR Temp Document', mimeType: MimeType.GOOGLE_DOCS }, 
-        file.getId(), 
-        { ocr: true } // OCRを有効にする
-      );
-      
-      const doc = DocumentApp.openById(ocrFile.id);
-      const text = doc.getBody().getText();
-      Drive.Files.remove(ocrFile.id); // 一時ファイルを削除
-      return text;
-
-    } catch (e) {
-      Logger.log("OCR Error during Drive.Files.copy/DocumentApp.openById: " + e.message);
-      return null;
-    }
-  }
-  
-  Logger.log(`Skipping file type: ${mimeType}`);
-  return null;
-}
-
-/**
- * Calls the GCP Natural Language API for classification.
- * @param {string} content The text content of the file.
- * @returns {string | null} The primary category name or null if classification fails.
- */
-function classifyDocument(content) {
-  const GCP_PROJECT_ID = getScriptProperty('GCP_PROJECT_ID');
-  if (!GCP_PROJECT_ID) {
-    Logger.log("ERROR: GCP_PROJECT_ID is not set in Script Properties.");
-    return "Manual Review"; // この関数内では英語のまま返す
-  }
-
-  const apiUrl = `https://language.googleapis.com/v1/documents:classifyText`;
-  
-  let contentToSend = content;
-  
-  // 1. 日本語対応のため、テキストを英語に翻訳
-  try {
-    contentToSend = LanguageApp.translate(content, 'ja', 'en');
-    Logger.log(`[TRANSLATION] Japanese detected. Translated to English for GCP classification.`);
-  } catch (e) {
-      Logger.log(`[TRANSLATION ERROR] Failed to translate: ${e.message}`);
-      // 翻訳失敗時は元のコンテンツで続行し、API側でエラーが出る可能性を許容
-      // またはここで処理を中断する（今回は続行）
-  }
-  
-  // APIへのリクエストペイロード
-  const payload = {
-    document: {
-      content: contentToSend, // 翻訳後のコンテンツを使用
-      type: 'PLAIN_TEXT'
-    }
-  };
-
-  const options = {
-    method: 'post',
-    contentType: 'application/json',
-    payload: JSON.stringify(payload),
-    muteHttpExceptions: true, 
-    
-    headers: {
-      'Authorization': 'Bearer ' + ScriptApp.getOAuthToken(),
-      'X-Goog-User-Project': GCP_PROJECT_ID 
-    }
-  };
-
-  try {
-    const response = UrlFetchApp.fetch(apiUrl, options);
-    const responseCode = response.getResponseCode();
-    const responseText = response.getContentText();
-    const jsonResponse = JSON.parse(responseText);
-    
-    if (responseCode !== 200) {
-      Logger.log(`[NL API ERROR] HTTP Status: ${responseCode}, Response: ${responseText}`);
-      return "Manual Review"; // APIエラー時は手動レビューへ
-    }
-    
-    if (jsonResponse.categories && jsonResponse.categories.length > 0) {
-      const categoryPath = jsonResponse.categories[0].name;
-      const parts = categoryPath.split('/');
-      // パスの一番最後の要素をフォルダ名として使用
-      return parts[parts.length - 1] || "Uncategorized"; 
-    }
-    
-    return "Manual Review"; // カテゴリが見つからなかった場合 (英語)
-
-  } catch (e) {
-    Logger.log("UrlFetch Error during classification: " + e.message);
-    return "Manual Review"; // ネットワーク/JSONパースエラー時も手動レビューへ (英語)
-  }
-}
-
-/**
- * テキスト内のキーワードに基づいてドキュメントの種類を分類します。
- * @param {string} content - 抽出されたテキストコンテンツ。
- * @returns {string} 分類されたドキュメントの種類（日本語）。一致しない場合は "不明" を返します。
- */
-function classifyByKeywords(content) {
-  // ドキュメントの種類と、それに関連するキーワードの対応表
-  // このルールをカスタマイズして、分類の精度を上げることができます。
-  // キーワードは正規表現も利用可能です。
-  const keywordRules = {
-    "請求書": [/請求書/, /ご請求/, /invoice/i],
-    "領収書": [/領収書/, /receipt/i],
-    "取扱説明書": [/取扱説明書/, /instruction manual/i, /セットアップガイド/],
-    "保証書": [/保証書/, /warranty/i],
-    "給与明細": [/給与明細/, /支給/],
-    "契約書": [/契約書/, /agreement/i, /業務委託/],
-    "チラシ・DM": [/キャンペーン/, /限定/],
-    // 必要に応じてルールを追加
-  };
-
-  // 各ルールを順番にチェック
-  for (const docType in keywordRules) {
-    const keywords = keywordRules[docType];
-    for (const keyword of keywords) {
-      if (content.match(keyword)) {
-        Logger.log(`Keyword match found: Document type is "${docType}"`);
-        return docType;
-      }
-    }
-  }
-
-  // どのキーワードにも一致しなかった場合
-  return "不明";
-}
-
-/**
- * AIが分類した英語のカテゴリ名を、対応する日本語のフォルダ名に変換します。
- * @param {string} englishCategory - AIが返した英語のカテゴリ名 (例: "Finance", "Software")
- * @returns {string} 日本語のフォルダ名 (例: "経理", "ソフトウェア")。対応表にない場合は "手動レビュー" を返します。
- */
-function convertCategoryToJapanese(englishCategory) {
-  // 英語カテゴリと日本語フォルダ名の対応表
-  // ここの対応表を、ご自身の分類したいフォルダに合わせてカスタマイズしてください。
-  const categoryMap = {
-    // --- 一般的なカテゴリの例 ---
-    "Arts & Entertainment": "アート・エンタメ",
-    "Autos & Vehicles": "自動車",
-    "Beauty & Fitness": "美容・フィットネス",
-    "Books & Literature": "書籍・文学",
-    "Business & Industrial": "ビジネス・産業",
-    "Computers & Electronics": "コンピュータ・電子機器",
-    "Finance": "経理・財務",
-    "Food & Drink": "食品・飲料",
-    "Games": "ゲーム",
-    "Health": "健康",
-    "Hobbies & Leisure": "趣味・レジャー",
-    "Home & Garden": "ホーム・ガーデン",
-    "Internet & Telecom": "インターネット",
-    "Jobs & Education": "仕事・教育",
-    "Law & Government": "法律・行政",
-    "News": "ニュース",
-    "Online Communities": "オンラインコミュニティ",
-    "People & Society": "社会",
-    "Pets & Animals": "ペット・動物",
-    "Real Estate": "不動産",
-    "Reference": "リファレンス",
-    "Science": "科学",
-    "Shopping": "ショッピング",
-    "Sports": "スポーツ",
-    "Travel": "旅行",
-    "World Localities": "地域",
-    // --- 特殊なカテゴリ ---
-    "Uncategorized": "未分類",
-    "Manual Review": "手動レビュー" // 手動レビューも日本語に
-  };
-
-  // 対応表にカテゴリが存在すれば日本語名を、なければ "手動レビュー" を返す
-  return categoryMap[englishCategory] || "手動レビュー";
 }
 
 /**
