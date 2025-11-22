@@ -63,20 +63,25 @@ function doPost(e) {
         debugLogs.push("File retrieved successfully: " + file.getName());
         debugLogs.push("File ID: " + file.getId());
         
-        // ★★★★★ ここから追加 ★★★★★
-        // 4. ファイルをリネームする (newFileNameが指定されている場合)
+        // 4. ファイルをリネームする (ロジックを簡素化)
+        // discord-botから渡されたnewFileNameを唯一の正とする
         if (newFileName && newFileName !== file.getName()) {
           file.setName(newFileName);
           debugLogs.push("File renamed to: " + newFileName);
+        } else {
+          debugLogs.push("Skipping rename. Reason: newFileName not provided or is the same as the current name.");
+          if(newFileName) {
+            debugLogs.push(`(newFileName: ${newFileName}, currentName: ${file.getName()})`);
+          }
         }
-        // 4. Move the file using the modern method (moveTo)
-        file.moveTo(targetFolder);
         
+        // 5. ファイルを移動する
+        file.moveTo(targetFolder);
         debugLogs.push("File moved successfully to: " + targetFolder.getName());
         
-        // 成功時はログを返さない（本番環境用）
-        // デバッグ時のみ以下を有効化:
-        // return ContentService.createTextOutput("Success: File moved.\nDebug:\n" + debugLogs.join("\n"));
+        // 6. 処理後に説明欄をクリアする
+        file.setDescription("");
+        debugLogs.push("File description cleared.");
         
         return ContentService.createTextOutput("Success: File moved.");
         

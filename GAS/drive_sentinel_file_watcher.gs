@@ -95,7 +95,12 @@ function processFile(file) {
     const description = `File classified as **${category}**. Please click the button to approve.`;
     sendDiscordNotification("New File Ready for Approval", description, originalFileName, file.getId(), category, finalNewFileName);
     
-    try { file.setDescription("DS_PROCESSED_PENDING_APPROVAL"); } catch (e) { Logger.log("Warning: Could not set file description (permission issue)."); }
+    try {
+      // 説明欄にリネーム後のファイル名を埋め込む
+      file.setDescription(`DS_PENDING_RENAME::${finalNewFileName}`);
+    } catch (e) {
+      Logger.log(`Warning: Could not set file description (permission issue). Error: ${e.message}`);
+    }
 
   } else {
     // 失敗時：手動レビュー
@@ -105,7 +110,11 @@ function processFile(file) {
     const description = `Warning: Could not classify document: ${originalFileName}. Reason: ${reason}. Manual review needed.`;
     sendDiscordNotification("AI Classification Failed", description, originalFileName, file.getId(), categoryForNotification, finalNewFileName);
     
-    try { file.setDescription("DS_PROCESSED_MANUAL_REVIEW"); } catch (e) { Logger.log("Warning: Could not set file description (permission issue)."); }
+    try {
+      file.setDescription("DS_PROCESSED_MANUAL_REVIEW");
+    } catch (e) {
+      Logger.log(`Warning: Could not set file description (permission issue). Error: ${e.message}`);
+    }
   }
 }
 
