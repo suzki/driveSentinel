@@ -65,7 +65,7 @@ function classifyFileWithGemini_GAS(file, options) {
 - 判断が難しい場合は\`category\`を「その他」にしてください。`;
 
   // ご指定の最新モデルを使用
-  const modelName = 'gemini-2.5-pro';
+  const modelName = 'gemini-2.5-flash';
 
   const apiEndpoint = `https://${location}-aiplatform.googleapis.com/v1/projects/${projectId}/locations/${location}/publishers/google/models/${modelName}:streamGenerateContent`;
 

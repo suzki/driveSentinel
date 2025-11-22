@@ -4,7 +4,7 @@
 
 ## ✨ 主な機能
 
-- **AIによる自動分類**: Vertex AIの強力なマルチモーダルモデル (`gemini-2.0-pro`) を使用し、ファイルの内容を直接解析してカテゴリを判断します。
+- **AIによる自動分類**: Vertex AIの強力なマルチモーダルモデル (`gemini-2.5-flash`) を使用し、ファイルの内容を直接解析してカテゴリを判断します。
 - **AIによるファイル名提案**: AIがファイル内容を要約し、`YYYY-MM-DD_内容の要約.拡張子` のような分かりやすいファイル名を自動で生成・提案します。
 - **Discord連携**: 分類結果と承認ボタンをDiscordに通知し、ワンクリックでファイルのリネームと移動を実行できます。（※Discord Bot側の実装が必要です）
 - **サーバーレス運用**: Google Apps Script (GAS) の時間ベースのトリガーで動作するため、追加のサーバーは不要です。
@@ -16,7 +16,7 @@
 graph TD
     subgraph "Google Cloud"
         GD[/"Google Drive<br/>(ファイルアップロード)"/] -- ファイルを検知 --> GAS[Google Apps Script<br/>(定時実行トリガー)]
-        GAS -- 内容を解析 --> VertexAI[Vertex AI<br/>(Gemini 2.0 Pro)]
+        GAS -- 内容を解析 --> VertexAI[Vertex AI<br/>(Gemini 2.5 Flash)]
     end
 
     subgraph "通知 & 承認フロー"

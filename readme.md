@@ -11,7 +11,7 @@ sequenceDiagram
     actor User
     participant GDrive as Google Drive<br>(Inbox)
     participant GAS_Watcher as GAS (File Watcher)
-    participant NLP as Google Cloud<br>Natural Language API
+    participant VertexAI as Vertex AI<br>(Gemini)
     participant Bot as Discord Bot<br>(Cloud Run)
     participant Discord
     participant GAS_Handler as GAS (Submit Handler)
@@ -19,15 +19,10 @@ sequenceDiagram
 
     User->>GDrive: ファイルをアップロード
     GAS_Watcher->>GDrive: 定期的に新着ファイルをチェック
-    GAS_Watcher->>GDrive: ファイル内容をテキストとして抽出 (OCR)
-    alt キーワードで分類可能
-        GAS_Watcher-->>GAS_Watcher: キーワードでカテゴリ分類
-    else AIで分類
-        GAS_Watcher->>NLP: テキストを送信し、カテゴリ分類を依頼
-        NLP-->>GAS_Watcher: 分類結果を返す
-    end
+    GAS_Watcher->>VertexAI: ファイルを送信し、分類とファイル名提案を依頼
+    VertexAI-->>GAS_Watcher: 分類カテゴリと提案ファイル名を返す
     GAS_Watcher->>Bot: ファイル情報、カテゴリ、新ファイル名案を通知 (POST /notify)
-    Bot->>Discord: 「承認」「拒否」ボタン付きメッセージを投稿
+    Bot->>Discord: 「承認」ボタン付きメッセージを投稿
     User->>Discord: 「承認」ボタンをクリック
     Discord->>Bot: ボタン操作を通知 (POST /)
     Bot->>GAS_Handler: ファイルID、カテゴリ、新ファイル名をPOST
@@ -40,13 +35,11 @@ sequenceDiagram
 ## 3. 主要機能
 
 *   **ファイル自動監視:** 指定されたGoogle Driveフォルダを定期的に監視し、新しいファイルを自動で検知します。
-*   **AIによる自動分類:**
-    *   **キーワード分類:** 「請求書」「領収書」などの定義済みキーワードがファイル内に含まれる場合、即座にカテゴリを特定します。
-    *   **AI分類:** キーワードで分類できない場合、Google Cloud Natural Language APIを利用してファイルの内容を解析し、最適なカテゴリを推測します。
-*   **ファイル名の自動提案:** `YYYY-MM-DD_カテゴリ名.拡張子` の形式で、整理に最適なファイル名を自動で生成・提案します。
-*   **AIによるファイル名提案:** AIがファイル内容を分析し、`YYYY-MM-DD_内容の要約.拡張子` のような分かりやすいファイル名を自動で生成・提案します。
+*   **AIによる自動分類とリネーム:**
+    *   **AI分類:** Vertex AI (Gemini) のマルチモーダル機能を利用し、PDFや画像ファイルの内容を直接解析して、最適なカテゴリを推測します。
+    *   **AIによるファイル名提案:** AIがファイル内容を分析し、`YYYY-MM-DD_内容の要約.拡張子` のような、日付と内容に基づいた分かりやすいファイル名を自動で生成・提案します。
 *   **Discordによる承認ワークフロー:** 分類結果と提案ファイル名をDiscordに通知します。ユーザーは「承認」ボタンをクリックするだけで、ファイルの整理を実行できます。
-*   **自動リネームとフォルダ移動:** 承認されると、ファイルは提案された名前にリネームされ、カテゴリに対応したフォルダへ自動的に移動します。
+*   **自動リネームとフォルダ移動:** 承認されると、ファイルはAIによって提案された名前にリネームされ、指定されたカテゴリのフォルダへ自動的に移動します。
 
 ## 4. コンポーネント詳細
 
@@ -58,11 +51,10 @@ sequenceDiagram
 *   **役割:** 受信トレイフォルダを監視し、新着ファイルの分類とDiscordへの通知を行います。
 *   **処理フロー:**
     1.  新着ファイルを検知します。
-    2.  ファイルがPDFや画像の場合、Google Drive APIのOCR機能を用いてテキストを抽出します。
-    3.  `classifyByKeywords`関数で、テキストがキーワードに合致するか判定します。
-    4.  合致しない場合、`classifyDocument`関数でGCP Natural Language APIに分類を依頼します。
-    5.  AIからの分類結果とファイル名提案を元に、新しいファイル名を決定します。
-    6.  `sendDiscordNotification`関数で、Discord Botの`/notify`エンドポイントに処理結果をPOSTします。
+    2.  `classifyFileWithGemini_GAS`関数を呼び出し、ファイル（PDF、画像など）をVertex AI (Gemini)に送信します。
+    3.  Vertex AIがファイル内容を解析し、①分類カテゴリ と ②新しいファイル名 を返します。
+    4.  AIからの分類結果とファイル名提案を元に、最終的なファイル名を決定します。
+    5.  `sendDiscordNotification`関数で、Discord Botの`/notify`エンドポイントに処理結果をPOSTします。
 
 #### b. `drive_sentinel_submit_handler.gs`
 Webアプリとしてデプロイされ、Discord Botからのリクエストを受け付けます。
@@ -94,7 +86,8 @@ Webアプリとしてデプロイされ、Discord Botからのリクエストを
 | ------------------------------ | ------------------------------------------------------------------ |
 | `INBOX_FOLDER_ID`              | 監視対象のGoogle DriveフォルダのID。                               |
 | `DESTINATION_ROOT_FOLDER_ID`   | 分類済みファイルを保存する親フォルダのID。                         |
-| `GCP_PROJECT_ID`               | Natural Language APIを使用するためのGCPプロジェクトID。            |
+| `GCP_PROJECT_ID`               | Vertex AI (Gemini) を使用するためのGCPプロジェクトID。            |
+| `GCP_LOCATION`                 | Vertex AIのエンドポイントリージョン (例: `us-central1`)。          |
 | `BOT_API_URL`                  | Discord Bot (Cloud Run) の `/notify` エンドポイントのURL。         |
 | `GAS_API_KEY`                  | Botへのリクエストを認証するための共有APIキー。                     |
 
