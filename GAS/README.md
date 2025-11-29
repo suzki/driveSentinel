@@ -15,13 +15,13 @@
 ```mermaid
 graph TD
     subgraph "Google Cloud"
-        GD[/"Google Drive<br/>(ファイルアップロード)"/] -- ファイルを検知 --> GAS[Google Apps Script<br/>(定時実行トリガー)]
-        GAS -- 内容を解析 --> VertexAI[Vertex AI<br/>(Gemini 2.5 Flash)]
+        GoogleDrive --> GoogleAppsScript
+        GoogleAppsScript -- 内容を解析 --> VertexAI
     end
 
     subgraph "通知 & 承認フロー"
-        GAS -- 分類結果を通知 --> Discord[Discord<br/>(ユーザーへの通知)]
-        Discord -- ユーザー操作<br/>(承認/却下) --> BotAPI[Discord Bot API<br/>(承認・却下処理)]
+        GoogleAppsScript -- 分類結果を通知 --> Discord
+        Discord -- "ユーザー操作 (承認/却下)" --> DiscordBotAPI
     end
 ```
 
