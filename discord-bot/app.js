@@ -153,10 +153,10 @@ app.post('/', verifyKeyMiddleware(PUBLIC_KEY), async (req, res) => {
                 });
 
                 let responseMessage;
-                if (gasResponse.data.includes("Success")) {
+                if (gasResponse.data && gasResponse.data.status === 'success') {
                     responseMessage = `[DS] 整理完了: ファイルはフォルダ \`${folderName}\` へ移動されました。`;
                 } else {
-                    responseMessage = `[DS] 整理エラーが発生しました。GASからの応答: \n\`${gasResponse.data}\``;
+                    responseMessage = `[DS] 整理エラーが発生しました。GASからの応答: \n\`${JSON.stringify(gasResponse.data)}\``;
                 }
                 
                 // Discordに最終的な結果を通知
@@ -294,7 +294,7 @@ app.post('/', verifyKeyMiddleware(PUBLIC_KEY), async (req, res) => {
                     });
 
                     let responseMessage;
-                    if (gasResponse.data && gasResponse.data.includes("Success")) {
+                    if (gasResponse.data && gasResponse.data.status === 'success') {
                         responseMessage = `✅ **[DS] 整理完了**\nファイルはフォルダ \`${category}\` へ移動されました。`;
                     } else {
                         // エラーレスポンスの場合、詳細をログに出力してから表示
