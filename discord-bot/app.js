@@ -7,7 +7,7 @@ const { ApplicationCommandOptionType } = require('discord.js');
 // --- DS Configuration ---
 // 環境変数から設定を読み込む (Cloud Runの環境変数として設定します)
 const PUBLIC_KEY = process.env.DISCORD_PUBLIC_KEY; // Discord Developer Portalで取得
-const GAS_WEBAPP_URL = process.env.DISCORD_GAS_SUBMIT_HANDLER_URL || process.env.GAS_WEBAPP_URL; // GAS WebアプリのURL
+const GAS_WEBAPP_URL = process.env.GAS_WEBAPP_URL; // GAS WebアプリのURL
 const APPLICATION_ID = process.env.DISCORD_APPLICATION_ID; // DiscordアプリケーションID
 const BOT_TOKEN = process.env.DISCORD_BOT_TOKEN; // Discord Botのトークン (メッセージ編集に使用)
 const DISCORD_CHANNEL_ID = process.env.DISCORD_CHANNEL_ID; // 通知を送信するDiscordチャンネルID
@@ -176,6 +176,59 @@ app.post('/', verifyKeyMiddleware(PUBLIC_KEY), async (req, res) => {
                 await axios.patch(`https://discord.com/api/v10/webhooks/${APPLICATION_ID}/${interaction.token}/messages/@original`, {
                     content: `❌ **[DS] 致命的なエラー**\nGASへのリクエスト中に問題が発生しました。\nステータス: ${error.response?.status}\n詳細: ${error.response?.data || error.message}`,
                     embeds: interaction.message.embeds
+                });
+            }
+        }
+        if (name === 'exec') {
+            // 1. Defer the reply immediately
+            res.send({
+                type: 5, // DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE
+                data: {
+                    content: `▶️ 手動実行リクエストを受信しました。ドライブの受信トレイを確認しています...`
+                }
+            });
+
+            // 2. Asynchronously call the GAS web app
+            try {
+                console.log('Sending "execute_watcher" action to GAS...');
+                const gasResponse = await axios.post(GAS_WEBAPP_URL, {
+                    action: 'execute_watcher' // The new action parameter
+                }, {
+                    // Add a timeout to prevent the bot from waiting indefinitely
+                    timeout: 28000 // 28 seconds, just under the typical 30s GAS limit
+                });
+
+                // 3. Update the original deferred message with the result
+                let responseMessage;
+                if (gasResponse.data && gasResponse.data.status === "success") {
+                    responseMessage = `✅ **[DS] 手動実行完了**\nドライブのファイルチェックが正常に完了しました。新しいファイルがあれば通知が送信されます。`;
+                } else {
+                    // This case might happen if GAS returns an error JSON
+                    responseMessage = `⚠️ **[DS] 手動実行で問題が発生**\nGASからの応答: \`\`\`\n${JSON.stringify(gasResponse.data)}\n\`\`\``;
+                }
+
+                await axios.patch(`https://discord.com/api/v10/webhooks/${APPLICATION_ID}/${interaction.token}/messages/@original`, {
+                    content: responseMessage
+                });
+
+            } catch (error) {
+                console.error('GAS Request Error for "execute_watcher":', {
+                    message: error.message,
+                    status: error.response?.status,
+                    data: error.response?.data,
+                    isTimeout: error.code === 'ECONNABORTED'
+                });
+
+                let errorMessage = `❌ **[DS] 致命的なエラー**\nGASへのリクエスト中に問題が発生しました。\n`;
+                if (error.code === 'ECONNABORTED') {
+                    errorMessage += `エラー: タイムアウト\nGASの処理が時間内に完了しませんでした。これは多数のファイルを処理した場合に発生する可能性があります。しばらくしてから再試行してください。`;
+                } else {
+                    errorMessage += `ステータス: ${error.response?.status}\n詳細: \`\`\`${JSON.stringify(error.response?.data) || error.message}\`\`\``;
+                }
+
+                // Update the original message with the error details
+                await axios.patch(`https://discord.com/api/v10/webhooks/${APPLICATION_ID}/${interaction.token}/messages/@original`, {
+                    content: errorMessage
                 });
             }
         }

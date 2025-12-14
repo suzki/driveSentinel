@@ -6,7 +6,25 @@ function doPost(e) {
   log("=== doPost called (Service Account) ===");
 
   try {
-    // 1. Authenticate and get properties
+    // 1. Parse request to check for a specific action
+    const requestData = JSON.parse(e.postData.contents);
+
+    // --- Action Dispatcher ---
+    // If a specific action is requested, handle it here.
+    if (requestData.action === 'execute_watcher') {
+      log("Action received: 'execute_watcher'. Starting file check process.");
+      
+      // Execute the main function from the file watcher script.
+      // Note: This is a synchronous call. If the process takes longer than 30 seconds,
+      // the Discord bot might time out, but the script will continue running on Google's side.
+      checkNewFilesAndNotify(); 
+      
+      log("File check process finished successfully.");
+      return createJsonResponse({ status: "success", message: "File watcher executed successfully." });
+    }
+    
+    // --- Default Action: Process File Move ---
+    log("Default action: Processing file move request.");
     const authToken = getGcpAuthToken();
     const DESTINATION_ROOT_FOLDER_ID = PropertiesService.getScriptProperties().getProperty('DESTINATION_ROOT_FOLDER_ID');
 
@@ -14,16 +32,15 @@ function doPost(e) {
       log("CRITICAL: DESTINATION_ROOT_FOLDER_ID is not set.");
       return createJsonResponse({ status: "error", message: "Server configuration error: Root folder not set." }, 500);
     }
-
-    // 2. Parse request
-    const requestData = JSON.parse(e.postData.contents);
+    
+    // 2. Extract data for file moving
     const fileId = requestData.fileId ? requestData.fileId.trim() : null;
     const targetFolderName = requestData.folderName;
     const newFileName = requestData.newFileName;
 
     if (!fileId || !targetFolderName || !newFileName) {
-      log(`ERROR: Invalid request. fileId=${fileId}, folderName=${targetFolderName}, newFileName=${newFileName}`);
-      return createJsonResponse({ status: "error", message: "Invalid request: fileId, folderName, and newFileName are required." }, 400);
+      log(`ERROR: Invalid request for file move. fileId=${fileId}, folderName=${targetFolderName}, newFileName=${newFileName}`);
+      return createJsonResponse({ status: "error", message: "Invalid request: fileId, folderName, and newFileName are required for moving a file." }, 400);
     }
 
     // 3. Get file's current state (we need its original parents to move it)
@@ -88,7 +105,7 @@ function doPost(e) {
 
 function createJsonResponse(data, statusCode = 200) {
   const output = ContentService.createTextOutput(JSON.stringify(data))
-    .setMimeType(ContentService.MmeType.JSON);
+    .setMimeType(ContentService.MimeType.JSON);
   return output;
 }
 
@@ -149,4 +166,3 @@ function getOrCreateFolder(folderName, rootFolderId, authToken) {
     return null;
   }
 }
-
