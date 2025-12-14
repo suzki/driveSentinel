@@ -1,12 +1,9 @@
 /**
- * Drive Sentinel (DS) File Watcher
+ * Drive Sentinel (DS) File Watcher (Service Account Version)
  *
  * This script runs on a time-based trigger to check the inbox folder for new files,
- * uses GCP Natural Language API for classification, and sends notifications to Discord via Webhook.
- *
- * Dependencies:
- * - config.js (for constants)
- * - Drive API (V2) Advanced Service
+ * uses GCP Vertex AI for classification, and sends notifications to Discord.
+ * It uses UrlFetchApp with a service account token for all Google API interactions.
  */
 
 // Script Propertiesから定数を取得するヘルパー関数
@@ -14,55 +11,74 @@ function getScriptProperty(key) {
   return PropertiesService.getScriptProperties().getProperty(key);
 }
 
-
 /**
  * Main function executed by the time-based trigger.
  * Checks for new files and initiates the classification and notification process.
  */
 function checkNewFilesAndNotify() {
-  Logger.log("--- Starting Drive Sentinel Check ---");
+  Logger.log("--- Starting Drive Sentinel Check (Service Account) ---");
   try {
-    // DriveAppが未定義の場合の予防策
-    if (typeof DriveApp === 'undefined') {
-        Logger.log("CRITICAL ERROR: DriveApp is not available.");
-        return;
-    }
-
     const INBOX_FOLDER_ID = getScriptProperty('INBOX_FOLDER_ID');
     if (!INBOX_FOLDER_ID) {
       Logger.log("ERROR: INBOX_FOLDER_ID is not set in Script Properties.");
       return;
     }
 
-    const inbox = DriveApp.getFolderById(INBOX_FOLDER_ID);
-    const files = inbox.getFiles();
+    // Get the service account auth token once for this execution run.
+    const authToken = getGcpAuthToken();
+    const driveApiHeaders = { 'Authorization': 'Bearer ' + authToken };
+
+    // Find files in the inbox folder that are not trashed.
+    const searchQuery = `'${INBOX_FOLDER_ID}' in parents and trashed = false`;
+    const listUrl = `https://www.googleapis.com/drive/v2/files?q=${encodeURIComponent(searchQuery)}&maxResults=20&fields=items(id,title,description,fileSize,createdDate)`;
+    
+    const response = UrlFetchApp.fetch(listUrl, {
+      method: 'get',
+      headers: driveApiHeaders,
+      muteHttpExceptions: true
+    });
+
+    const responseCode = response.getResponseCode();
+    if (responseCode !== 200) {
+      Logger.log(`Failed to list files. Code: ${responseCode}. Response: ${response.getContentText()}`);
+      return;
+    }
+
+    const fileList = JSON.parse(response.getContentText());
     let fileCount = 0;
 
-    while (files.hasNext()) {
-      const file = files.next();
-      // Skip files that are already processed or are too small/temporary
-      if (file.getSize() === 0 || file.getDescription() === "xDS_PROCESSED_PENDING_APPROVAL") continue; 
-      
-      processFile(file);
-      fileCount++;
-      
-      // Limit processing per execution to prevent hitting time limits
-      if (fileCount >= 10) break;
+    if (fileList.items) {
+      for (const file of fileList.items) {
+        // Skip files that are already processed, are folders, or are too small/temporary.
+        if (file.fileSize === 0 || (file.description && file.description.startsWith("DS_"))) {
+            continue;
+        }
+        
+        processFile(file, authToken);
+        fileCount++;
+        
+        // Limit processing per execution to prevent hitting time limits.
+        if (fileCount >= 10) {
+            Logger.log("Processing limit reached for this run.");
+            break;
+        }
+      }
     }
     
     Logger.log(`--- Finished. Processed ${fileCount} files. ---`);
 
   } catch (e) {
-    Logger.log("Critical error in checkNewFilesAndNotify: " + e.message);
+    Logger.log(`Critical error in checkNewFilesAndNotify: ${e.message}\nStack: ${e.stack}`);
   }
 }
 
 /**
- * Processes a single file: extracts text, classifies it, and sends Discord notification.
- * @param {GoogleAppsScript.Drive.File} file The file object to process.
+ * Processes a single file: classifies it and sends a Discord notification.
+ * @param {object} file The Drive API v2 file resource object.
+ * @param {string} authToken The service account OAuth2 token.
  */
-function processFile(file) {
-  Logger.log(`Processing file: ${file.getName()} (${file.getId()})`);
+function processFile(file, authToken) {
+  Logger.log(`Processing file: ${file.title} (${file.id})`);
 
   const GCP_PROJECT_ID = getScriptProperty('GCP_PROJECT_ID');
   const GCP_LOCATION = getScriptProperty('GCP_LOCATION');
@@ -73,60 +89,67 @@ function processFile(file) {
   }
 
   Logger.log("Starting AI classification with Gemini Vision...");
-  // 1. AI分類とファイル名提案を取得
-  const classificationResult = classifyFileWithGemini_GAS(file, { projectId: GCP_PROJECT_ID, location: GCP_LOCATION });
+  const classificationResult = classifyFileWithGemini_GAS(file.id, { projectId: GCP_PROJECT_ID, location: GCP_LOCATION }, authToken);
   const { category, fileName: suggestedName } = classificationResult;
 
-  let finalNewFileName = file.getName(); // デフォルトは元のファイル名
-  const originalFileName = file.getName();
-  const categoryForNotification = category || "手動レビュー"; // 通知用のカテゴリ名
+  let finalNewFileName = file.title;
+  const categoryForNotification = category || "手動レビュー";
 
-  // 2. 分類結果に基づいて処理を分岐
   if (category && !category.startsWith("手動レビュー") && suggestedName) {
-    // 成功時：AIの提案を採用
     Logger.log(`[SUCCESS] Classified as: ${category}. Suggested name: "${suggestedName}"`);
     
-    // 日付プレフィックスと拡張子を維持して新しいファイル名を生成
-    const creationDate = file.getDateCreated();
+    const creationDate = new Date(file.createdDate);
     const formattedDate = Utilities.formatDate(creationDate, Session.getScriptTimeZone(), "yyyy-MM-dd");
-    const extension = originalFileName.includes('.') ? `.${originalFileName.split('.').pop()}` : '';
+    const extension = file.title.includes('.') ? `.${file.title.split('.').pop()}` : '';
     finalNewFileName = `${formattedDate}_${suggestedName}${extension}`;
 
     const description = `File classified as **${category}**. Please click the button to approve.`;
-    sendDiscordNotification("New File Ready for Approval", description, originalFileName, file.getId(), category, finalNewFileName);
+    sendDiscordNotification("New File Ready for Approval", description, file.title, file.id, category, finalNewFileName);
     
-    try {
-      // 説明欄にリネーム後のファイル名を埋め込む
-      file.setDescription(`DS_PENDING_RENAME::${finalNewFileName}`);
-    } catch (e) {
-      Logger.log(`Warning: Could not set file description (permission issue). Error: ${e.message}`);
-    }
+    // Update file description to mark it as pending approval
+    updateFileDescription(file.id, `DS_PENDING_RENAME::${finalNewFileName}`, authToken);
 
   } else {
-    // 失敗時：手動レビュー
-    const reason = category || "Unknown error"; // categoryがnullの場合のフォールバック
-    Logger.log(`[ERROR] Classification failed or manual review needed for file: ${originalFileName}. Reason: ${reason}`);
+    const reason = category || "Unknown error";
+    Logger.log(`[ERROR] Classification failed for file: ${file.title}. Reason: ${reason}`);
     
-    const description = `Warning: Could not classify document: ${originalFileName}. Reason: ${reason}. Manual review needed.`;
-    sendDiscordNotification("AI Classification Failed", description, originalFileName, file.getId(), categoryForNotification, finalNewFileName);
+    const description = `Warning: Could not classify document: ${file.title}. Reason: ${reason}. Manual review needed.`;
+    sendDiscordNotification("AI Classification Failed", description, file.title, file.id, categoryForNotification, finalNewFileName);
     
-    try {
-      file.setDescription("DS_PROCESSED_MANUAL_REVIEW");
-    } catch (e) {
-      Logger.log(`Warning: Could not set file description (permission issue). Error: ${e.message}`);
+    updateFileDescription(file.id, "DS_PROCESSED_MANUAL_REVIEW", authToken);
+  }
+}
+
+/**
+ * Updates a file's description using the Drive API.
+ * @param {string} fileId The ID of the file to update.
+ * @param {string} description The new description.
+ * @param {string} authToken The service account OAuth2 token.
+ */
+function updateFileDescription(fileId, description, authToken) {
+  try {
+    const updateUrl = `https://www.googleapis.com/drive/v2/files/${fileId}`;
+    const payload = JSON.stringify({ description: description });
+    
+    const response = UrlFetchApp.fetch(updateUrl, {
+      method: 'patch',
+      contentType: 'application/json',
+      headers: { 'Authorization': 'Bearer ' + authToken },
+      payload: payload,
+      muteHttpExceptions: true
+    });
+
+    if (response.getResponseCode() !== 200) {
+      Logger.log(`Warning: Could not set file description for ${fileId}. Error: ${response.getContentText()}`);
     }
+  } catch (e) {
+    Logger.log(`Warning: Exception while setting file description for ${fileId}. Error: ${e.message}`);
   }
 }
 
 /**
  * Sends a notification message to Discord Bot via API endpoint.
- * The Bot will then send the message to Discord with button components.
- * @param {string} title The title of the Discord embed.
- * @param {string} description The main body of the message.
- * @param {string} fileName The name of the file.
- * @param {string} fileId The ID of the file.
- * @param {string} japaneseCategory The predicted category name (or "手動レビュー").
- * @param {string} newFileName The proposed new file name.
+ * (This function does not require changes as it already uses UrlFetchApp).
  */
 function sendDiscordNotification(title, description, fileName, fileId, japaneseCategory, newFileName) {
   const BOT_API_URL = getScriptProperty('BOT_API_URL');
@@ -142,31 +165,28 @@ function sendDiscordNotification(title, description, fileName, fileId, japaneseC
     description: description,
     fileName: fileName,
     fileId: fileId,
-    category: japaneseCategory, // 日本語カテゴリを送信
-    newFileName: newFileName    // 新しいファイル名を送信
+    category: japaneseCategory,
+    newFileName: newFileName
   };
 
   const options = {
     method: 'post',
     contentType: 'application/json',
     payload: JSON.stringify(payload),
-    headers: {
-      'X-API-Key': GAS_API_KEY
-    },
+    headers: { 'X-API-Key': GAS_API_KEY },
     muteHttpExceptions: true
   };
 
   try {
     const response = UrlFetchApp.fetch(BOT_API_URL, options);
     const responseCode = response.getResponseCode();
-    const responseText = response.getContentText();
-    
     if (responseCode === 200) {
       Logger.log(`Discord notification sent successfully for file: ${fileName}`);
     } else {
-      Logger.log(`Discord notification error (HTTP ${responseCode}): ${responseText}`);
+      Logger.log(`Discord notification error (HTTP ${responseCode}): ${response.getContentText()}`);
     }
   } catch (e) {
     Logger.log("Discord Bot API Error: " + e.message);
   }
 }
+
